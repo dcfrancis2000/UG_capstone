@@ -1,0 +1,31 @@
+/* Whole document: */
+body{
+  font-family: Optima, sans-serif;
+  font-size: 12pt;
+  line-height: 2;
+}
+/* Headers */
+h1 {
+    font-size:28pt;
+}
+h2,h4,h5,h6{
+  font-size: 20pt;
+}
+
+h3 {
+    font-size: 18pt;
+}
+
+
+
+h4 {
+    font-size: 16pt;
+}
+
+.math {
+  font-size: 11pt;
+}
+
+.monospace {
+    font-size: 12pt;
+}

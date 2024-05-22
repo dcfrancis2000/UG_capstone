@@ -1,0 +1,440 @@
+---
+title: '&nbsp;'
+always_allow_html: true
+output:
+  html_document:
+    css: UG_theme.css
+    self_contained: true
+editor_options:
+  chunk_output_type: console
+monofont: Lucida Console
+runtime: shiny
+resource_files:
+- accidentdata.csv
+- UW_logo.png
+---
+```{r,fig.align='center',echo=FALSE,out.width="100%",out.height='100%',fig.show='hold'}
+knitr::include_graphics(path=(c("UW_logo.png")),rel_path =FALSE)
+```
+
+<center>  
+# Assessing Accident Risk in Campus Recreation: a REMASTERED Study 
+</center>
+
+#### Daiven Francis
+#### 21 May 2024
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(ggplot2)
+library(chron)
+library(snakecase)
+library(car)
+library(knitr)
+library(kableExtra)
+library(shiny)
+library(plotly)
+library(htmltools)
+library(gridExtra)
+
+options(scipen=99)
+options(show.signif.stars = FALSE)
+opts_chunk$set(warning = FALSE, message = FALSE,comment = NA)
+COLOR <- '#492F24'; COLOR2 <- '#FFC425'
+data_raw <- read.csv("accidentdata.csv")
+```
+$\\$
+
+## Preface
+
+|       "Assessing Accident Risk in Campus Recreation: a Retrospective Study" was initially completed as part of my bachelor's degree in statistics. As I near the end of my master's program, I've decided to thoroughly revise this project. Reflecting on the original work, I realized that many processes were inefficient, the presentation lacked detailed explanations, and the concept wasn't analyzed as deeply as I wanted. While my original paper is available on my GitHub page, this updated version is more compelling. This "remastering" showcases my improved proficiency in statistical and computational techniques: an additional term has been added to the model, data previously omitted inappropriately has been reintroduced, more comprehensive tests and interpretations have been conducted, and an interactive plotting container has replaced the large grids of plots from the original project. I believe this updated project will be much easier to understand than the original version.
+
+$\\$
+
+## Abstract
+
+|       A simulation study was conducted to compare accident risks within the University of Wyoming Campus Recreation department. With recorded accident reports from a three-year period, this analysis focused on time, location, and activity effects using a semi-parametric bootstrap algorithm within a logistic regression framework. With time since opening as a covariate and location/activity interactions as groups, the study found that: 1) accident risk follows a quadratic trend over time, initially increasing and then decreasing; 2) no locations or activities had a higher accident risk than basketball in the MAC gym, although some showed no significant difference from this benchmark; and 3) most locations and activities had significantly lower odds of accidents compared to MAC basketball. These results suggest that a restructuring of risk management procedures may be necessary to ensure rapid response times and effective accident prevention.
+
+$\\$
+
+## Introduction
+
+|       The University of Wyoming Campus Recreation oversees most of the university's recreational opportunities not sanctioned by Athletics. This department has a risk management policy with procedures to prevent and respond to accidents. Accidents are defined as any event, typically an injury, requiring Campus Recreation to record its occurrence for liability reasons. Since accidents cannot be entirely prevented, every area under Campus Recreation's jurisdiction carries an inherent risk. This analysis aims to assist administrators by quantifying accident risk under specific facility conditions. The conditions of interest are location, activity, and time, with the following characteristics:
+
+* **Basketball and Volleyball**: These activities primarily take place in the MAC and Historic Gyms, the only locations with basketball and volleyball courts. The MAC has two courts, and the Historic Gym has three. All club basketball games and most pick-up games occur in the MAC, while all club volleyball games and some pick-up games occur in the Historic Gym.
+
+* **Facility-Specific Activities**: Activities such as lifting and badminton have designated areas, with lifting occurring throughout the facility's open gym equipment and badminton in the Historic Gym.
+
+* **Field Sports**: Soccer, rugby, and baseball are played either on an opponent's campus or on fields managed by the University of Wyoming, such as the Recreational Fields or the Indoor Practice Facility.
+
+* **Time**: Activities experience high-traffic and low-traffic hours. For example, basketball and volleyball courts are most frequently used from the end of the business day until closing at 10 PM. While the courts are always open, peak usage occurs during specific times of the day.
+
+|       Risk factors such as traffic, competition, and anaerobic demands are more prevalent in some activities than others. For instance, it is reasonable to assume that basketball in the MAC gym, known for its competitive nature in the afternoons, carries a higher accident risk than basketball in the Historic Gym, known for its smaller patron groups at the same time. Consequently, MAC basketball is expected to have the highest accident risk due to its high traffic, particularly in the evenings, combined with competitive play. Other high-traffic, competitive activities like rugby and volleyball are also expected to have a high but slightly lower risk than basketball. Due to sparser participation and less risky movements, no other activity is anticipated to have an accident risk as high as MAC basketball. The time of day is also expected to impact accident risk. Since the number of patrons tends to increase throughout the day and decrease later in the evening, there may be a quadratic effect of time on accident risk.
+
+```{r cleaning,echo=F,cache=TRUE}
+# Data Cleaning
+data_raw <- data_raw %>%
+    mutate(time = ifelse(time == 'none', NA, paste0('1899-12-31 ', time, ':00')))
+
+data <- data_raw %>%
+    select(time, location, activity) %>%
+    mutate(time = as.chron(time))
+
+# Mean imputation of missing times, and formatting as hours from 6 AM
+mean_time <- mean(data$time, na.rm = TRUE)
+data <- data %>%
+    mutate(time = if_else(is.na(time), mean_time, time),
+           time = as.numeric(difftime(time, as.chron("1899-12-31 06:00:00"), units = 'hours')))
+
+# Aggregation of variables: locations
+location_categories <- list(
+    fields = c('basefield', 'field', 'fratmall', 'ipf'),
+    facilities = c('1st', '2nd', '3rd', 'corbett', 'pool', 'wellness', 'boxing', 'raquet', 'wall'),
+    other = c('other', 'ice')
+)
+
+data <- data %>%
+    mutate(location = case_when(
+        location %in% location_categories$fields ~ 'fields',
+        location %in% location_categories$facilities ~ 'facilities',
+        location %in% location_categories$other ~ 'other',
+        TRUE ~ location
+    ))
+
+# Aggregation of variables: activities
+activity_categories <- list(
+    climbing = c('climb', 'toprope'),
+    recsports = c('cycle', 'baseball', 'softball', 'fencing', 'football', 'hockey'),
+    openrec = c('badminton', 'boxing', 'dodgeball', 'lift', 'raquet', 'run', 'swim'),
+    maintain = c('basketball', 'rugby', 'soccer', 'volleyball')
+)
+
+data <- data %>%
+    mutate(activity = case_when(
+        activity %in% activity_categories$climbing ~ 'climbing',
+        activity %in% activity_categories$recsports ~ 'recsports',
+        activity %in% activity_categories$openrec ~ 'openrec',
+        activity %in% activity_categories$maintain ~ activity,
+        TRUE ~ 'other'
+    ))
+
+data$location <- as.factor(ifelse(data$location == 'MAC', 
+                                  as.character(data$location), 
+                                  snakecase::to_title_case(as.character(data$location))))
+
+data$activity <- as.factor(map_chr(data$activity, ~ switch(.x,
+    'recsports' = 'Rec Sports',
+    'openrec' = 'Open Rec',
+    snakecase::to_title_case(.x)
+)))
+
+data$locact <- relevel(with(data,location:activity), ref = 'MAC:Basketball')
+```
+
+$\\$
+
+## Methodology
+
+### Data Collection and Processing
+
+|       The data used for analysis were extracted directly from Campus Recreation accident reports from the Fall 2018 semester to October 31, 2022. All processing and analysis were conducted using `R` version 4.3.2 in RStudio version 2023.12.1. Reports missing location or activity information were excluded from the analysis. Time was processed as the hours from 6 AM, resulting in a range from 0 to 16 hours. For the 11 missing time values, the mean time (10.51 hours) was imputed. A histogram of times is shown in Figure 1. No personal information was recorded from the accident reports, and details about the nature of the accidents were not considered. Many location/activity combinations had few or no entries, so locations or activities with fewer than 5 accidents were binned appropriately to simplify the outcomes. After processing, there were 5 locations and 8 activities of interest for a total of $n=141$ accidents.
+
+```{r time hist,echo=F,fig.align='center',fig.dim=c(5,3),fig.cap="Figure 1: Histogram of Accident Times"}
+library(ggplot2)
+ggplot(data = data,aes(x = time)) + geom_histogram(fill=COLOR,color=COLOR2,bins = 15) + theme_classic() + xlab('Hours From 6 AM') + ylab('Frequency')
+```
+
+
+#### Locations
+
+- **MAC Gym**
+- **Historic Gym**
+- **Facilities:** every location in the Half Acre facility except the gyms, such as the climbing wall, pool, and exercise studios
+- **Fields:** the Laramie baseball field, Recreational Fields, Indoor Practice Facility
+- **Other:** locations not managed by Campus Recreation, such as opponent fields and ice rinks
+
+#### Activities
+
+- **Basketball**
+- **Volleyball**
+- **Soccer**
+- **Climbing:** including top rope
+- **Rugby**
+- **Open Recreation:** facility-wide activities, comprised of badminton, boxing, dodgeball, weightlifting, racquetball, running, swimming
+- **Recreational Sports:** club sports activities, comprised of cycling, baseball, softball, fencing, flag football, and hockey
+- **Other:** any activity not fitting the other characteristics, such as skating
+
+```{r contingency tab,echo=F}
+tab <- with(data,table(location,activity))
+data <- data[,c(1,4)]
+kable(tab,align='c',caption = 'Table 1: Accident Locations and Activities') %>% kable_styling(bootstrap_options = c('striped','condensed'),full_width = F) %>% row_spec(0,bold=FALSE)
+```
+
+### Model Formulation
+
+|       A contingency table of accident occurrences is shown in Table 1. The table shows many locations and activities having a dominant cell, so it makes little sense to separate location and activity. Also, most table cells have very small expected value counts, so the assumptions are violated for a chi-square test of independence. To simplify the model, each combination of location and activity with 1 or more accident occurrences will be considered its own group. This yields 20 location/activity combinations. An accident occurrence for the $i^{th}$ observation and $j^{th}$ location/activity, $\text{Y}_{ij}$, is assumed to be Bernoulli distributed with accident probability $\pi_{ij}$. A generalized linear model (GLM) will be formulated to tie time and location/activity to the accident probability. The probability mass function for the Bernoulli distribution in exponential family form is
+
+$$
+\begin{aligned}
+f(y_{ij}|\pi_{ij})&=P(\text{Y}_{ij}=y_{ij}|\pi_{ij})=\pi_i^{y_{ij}}(1-\pi_{ij})^{1-y_{ij}} \\
+& = \exp(y_{ij}\eta_{ij}-\log(1+e^{\eta_{ij}})) \text{ for } \eta_{ij}=\log\left(\dfrac{\pi_{ij}}{1-\pi_{ij}}\right)
+\end{aligned}
+$$
+
+which implies the canonical link function is $\pi_{ij}=\dfrac{1}{1+e^{-\eta_{ij}}}$, or the logistic function, fitting a logistic regression model. The ratio of success/failure probabilities $\dfrac{\pi_{ij}}{1-\pi_{ij}}$ is called the odds. Moreover, accident risk is defined as how accident odds change according to the facility condition $i$ and location/activity $j$. Assuming MAC basketball as the reference category, the linear predictor $\eta_{ij}$ is equal to the population log odds of an accident and is given by the linear model
+
+$$
+\begin{aligned}
+\eta_{ij}&=\log\left(\dfrac{\pi_{ij}}{1-\pi_{ij}}\right)=\alpha+\beta_{j}+\gamma_{1}t_i+\gamma_{2}t_i^2 \text{ for } i=1,...,n_j,\space j=1,...,19 \\
+&\rightarrow \dfrac{\pi_{ij}}{1-\pi_{ij}}=\exp(\alpha+\beta_{j}+\gamma_{1}t_i+\gamma_{2}t_i^2)=e^{\alpha}e^{\beta_j}e^{\gamma_1t_i}e^{\gamma_2t_i^2} \text{ for } i=1,...,n_j,\space j=1,...,19 
+\end{aligned}
+$$
+
+where
+
+- $t_i$ is the hours from 6 AM for the $i^{th}$ observation,
+- $\alpha$ is the intercept term, or the population log odds of an accident for MAC basketball at $t=0$,
+- $\beta_{j}$ is the population log odds ratio of an accident between location/activity $j$ and MAC basketball at $t=0$,
+- $\gamma_{1}$ is the population linear change in log odds of an accident for a 1-hour increment of time, and
+- $\gamma_2$ is the population quadratic change in log odds of an accident for a 1-hour increment of time.
+
+Due to model convergence issues, no interaction terms between time and location/activity are considered in this model. Therefore, the time trend is assumed to be the same across all location/activity combinations. A useful metric for quantifying accident risk is the odds ratio, or the ratio of the accident odds between two groups. With this model, the population odds of an accident for MAC basketball is $e^\alpha$, and for any other location activity is $e^{\alpha+\beta_j}$. Thus, the odds ratio between location/activity $j$ and MAC basketball is 
+
+$$
+\begin{aligned}
+\dfrac{e^{\alpha + \beta_j}}{e^{\alpha}}=e^{(\alpha+\beta_j)-\alpha}=e^{\beta_j}
+\end{aligned}
+$$
+
+which explains why each $\beta_j$ term in the model is interpreted as the population log odds ratio between MAC basketball and location/activity $j$. 
+
+### Statistical Hypotheses
+
+|       From this formulation of the model, the testing procedure will start with the quadratic time trend and the odds ratios between all locations/activities via likelihood ratio test, with hypotheses shown below. A significance level of $\alpha=0.05$ will be used for all tests. If the quadratic trend fails to reject $\text{H}_0$, then the linear trend will be tested.
+
+<center>
+Time trend:
+$$
+\begin{aligned}
+&\text{H}_0:\gamma_{2}=0 \\
+&\text{H}_1:\gamma_{2}\ne0 
+\end{aligned}
+$$
+
+Location/activity log odds ratios:
+$$
+\begin{aligned}
+&\text{H}_0:\beta_{j}=0 \text{ for all } j=1,...,19\\
+&\text{H}_1:\beta_{j}\ne0 \text{ for any } j=1,...,19
+\end{aligned}
+$$
+</center>
+
+### Model Fitting
+
+|       One challenge with using this model is that it cannot be fit using only the information recorded because logistic regression requires a mix of accidents and non-accidents to estimate error accurately. In this application, there are no true instances of "non-accidents." To address this, a semi-parametric bootstrap algorithm will be employed to fit the model. For 1000 iterations, 141 non-accidents will be randomly generated and combined with the original dataset. The model will then be fit using iteratively re-weighted least squares. Each non-accident will have time i.i.d. uniformly distributed between 0 and 16, and a location/activity will be chosen with equal probability across all 22 combinations. The coefficient estimates and type II (partial) likelihood ratio test statistics will be stored, and their empirical distributions will be used to draw conclusions. In instances where randomly generated datasets fail to cover for singular observations in a group, the parameter estimates will be very large. If any parameter estimate is greater than 10 in magnitude, that iteration will not be considered. 
+
+|       This simulation approach fixes the estimated probability of an accident at 0.5, which simplifies any analysis regarding probabilities/odds and renders the intercept estimate $\hat{\alpha}$ uninterpretable. However, due to the proportional nature of the parameters, the relationships between each location/activity combination and time within the model will be preserved with respect to their *odds ratios*. The computational process of model fitting is shown below. For the hypothesis tests, empirical test statistic distribution means will be used to make decisions regarding all null hypotheses. The 95% quantile interval for each individual parameter will be used to determine their effects in the model. The value of interest in the intervals is 0 on the log scale and 1 on the exponential scale, which implies no effect if captured by the quantile interval. 
+
+```{r simulation,cache=TRUE}
+# Simulation Code
+n <- nrow(data)
+n.iter <- 1000
+locact <- sort(unique(data$locact))
+data_actual <- data.frame(time = data$time,locact = data$locact,accident = 1)
+head(data_actual)
+
+simulation_sample <- function() {
+    generated <- data.frame(time = runif(n,min = 0,max = 16), # max time 10PM
+               locact = as.factor(sample(locact,n,replace = TRUE)),
+               accident = 0)
+    rbind(data_actual,generated) 
+}
+
+it <- 0
+coef_matrix <- or_matrix <- matrix(NA,nrow = n.iter,ncol = 22)
+chisq_matrix <- matrix(NA,nrow = n.iter,ncol = 3)
+
+set.seed(0)
+tic <- Sys.time()
+while(it < n.iter) {
+    temp_data <- simulation_sample()
+    sim_mod <- glm(accident ~ I(time) + I(time^2) + locact,data = temp_data,family = 'binomial')
+    sim_coef <- coef(sim_mod)
+    if(max(abs(sim_coef)) < 10) { # singularity handling
+        it <- it + 1
+        coef_matrix[it,] <- sim_coef
+        or_matrix[it,] <- exp(sim_coef)
+        chisq_matrix[it,] <- Anova(sim_mod,type = 'II')[[1]]
+    }
+}
+toc <- Sys.time()
+toc - tic # Computation time
+```
+
+
+## Results
+
+```{r grid plot,echo=FALSE,fig.cap='Figure 2: Chi-Square Statistic Distributions. Red line marks the mean, black line marks the critical value.',fig.align='center',fig.dim=c(9,3)}
+
+termnames <- c('Time','Time Quadratic',as.character(locact[-1]))
+colnames(coef_matrix) <- colnames(or_matrix) <- c(NA,termnames)
+colnames(chisq_matrix) <- c('Time','Time Quadratic','Location/Activity')
+
+coef_quants <- t(apply(coef_matrix[,-1],2,quantile,probs=c(0.025,0.975),na.rm = TRUE))
+or_quants <- t(apply(or_matrix[,-1],2,quantile,probs=c(0.025,0.975),na.rm = TRUE))
+stat_quants <- t(apply(chisq_matrix,2,function(x) rep(mean(x,na.rm = TRUE),3)))
+
+grid_plot <- function(mat,quants,interesting_number,mfrow=c(7,3),xlim=NULL) {
+    p <- ncol(mat)
+    par(mfrow=mfrow,mar=c(4,4,2,2))
+    for(i in 1:p) {
+        hist(mat[,i],breaks=20,col=COLOR,border=COLOR2,main=NULL,
+             xlab=colnames(mat)[i],xlim=c(quantile(mat[,i],c(0.01,0.99),na.rm=T)))
+        abline(v=quants[i,],col=c('red'),lwd=2)
+        abline(v=interesting_number[i],col='black',lwd=2)
+    }
+}
+grid_plot(chisq_matrix,stat_quants,
+          as.matrix(qchisq(0.95,c(1,1,19))),mfrow=c(1,3))
+```
+
+```{r chisq table,echo=F}
+tab2 <- cbind(stat_quants[,1],c(1,1,19),pchisq(stat_quants[,1],c(1,1,19),lower.tail=F))
+colnames(tab2) <- c('$\\bar{\\chi}^2$','df','p-value')
+rownames(tab2) <- c('Time','Time Quadratic','Location/Activity')
+kable(tab2,caption = 'Table 2: Likelihood Ratio Tests',escape = F,digits = 4,align='c') %>%
+    kable_styling(bootstrap_options = c('striped','condensed'),full_width = F)
+```
+
+|       The empirical distributions of the likelihood ratio statistics are plotted in Figure 2 and summarized in Table 2. There sufficient evidence against the claim that the population change in log odds for a unit increase in time $(\gamma_2)$ is equal to zero. Thus, accident log odds has a quadratic relationship with time. There is sufficient evidence against the claim that the population log odds ratios between all location/activity combinations and MAC basketball ($\beta_j$) are equal to zero. Therefore, the analysis can proceed with comparing location and activity odds ratios. The summaries of each parameter estimate's empirical distributions is shown in Table 3. These distributions are plotted in Figure(s) 3 with an interactive term selection.
+
+```{r coef table,echo=F}
+tab3 <- cbind(apply(coef_matrix[,-1],2,mean,na.rm=T),
+              apply(coef_matrix[,-1],2,sd,na.rm=T),
+              t(apply(coef_matrix[,-1],2,quantile,probs=c(0.025,0.975),na.rm=T)))
+colnames(tab3) <- c('Mean','Standard Dev.','2.5% Quantile','97.5% Quantile')
+kable(tab3,caption = 'Table 3: Empirical Distribution Summaries',digits = 4,align='c') %>%
+    kable_styling(bootstrap_options = c('striped','responsive'),full_width = F) %>%
+    row_spec(c(1,2,3,4,8,9,10,13,19),background=COLOR2,color=COLOR)
+```
+
+|       The highlighted rows of the table are the main results of interest. Consistent with the likelihood ratio tests, the quadratic time coefficient does not eclipse zero and some location/activity estimates do not eclipse zero in their interval. There are no location/activity estimates that are strictly above zero which suggests no location/activity combination has a greater accident odds than MAC basketball. However, the 6 location/activity effect estimates that do eclipse zero are of interest because a zero effect of that parameter means the population odds ratio between MAC basketball and that location/activity is equal to $e^0=1$. With an odds ratio of 1, that location/activity and MAC basketball have equal accident odds and therefore equal accident risk. 
+
+```{r shiny,echo=F,fig.align='center',fig.cap='Figure(s) 3: Interactive Coefficient Estimate Histograms',fig.dim=c(8,10)}
+plot_data <- data.frame(
+  value = c(coef_matrix[,-1], or_matrix[,-1]),
+  scale = rep(c('Log', 'Exp'), each = 21 * 1000),
+  colname = rep(rep(colnames(coef_matrix)[-1], each = 1000), 2)
+)
+
+ui <- fluidPage(
+  headerPanel('Figure(s) 3: Interactive Histograms of Estimate Distributions'),
+
+  # Add custom CSS to center the plot, avoid scrolling, and style the input box
+  tags$head(
+    tags$style(HTML("
+      h1 { font-size: 12pt; }
+      body, html { height: 300px; margin: 0; }
+      .plot-container { height: 300px;}
+      .sidebar-panel { margin: 0px;} 
+      .skin-blue .main-header .logo:hover { background-color: #FFC425; }
+      .selectize-dropdown-content {max-height: 300px !important; color: #492F24; }
+    "))
+  ),
+fluidRow(
+    div(
+      class = "sidebar-panel",
+      sidebarPanel(
+        selectInput("plot_choice", "Select a Term:", choices = termnames)
+      )
+    )
+  ),
+  fluidRow(
+    div(
+      class = "plot-container",
+      plotlyOutput("plot_output")
+    )
+  )
+)
+
+# Define server logic required to draw the plot
+server <- function(input, output) {
+  output$plot_output <- renderPlotly({
+    name <- input$plot_choice
+    temp_log <- subset(plot_data, colname == name & scale == 'Log')
+    temp_exp <- subset(plot_data, colname == name & scale == 'Exp')
+    
+    plot_log <- ggplot(data = temp_log, aes(x = value)) +
+      geom_histogram(fill = COLOR, color = COLOR2, bins = 20) + 
+      geom_vline(xintercept = c(0, quantile(temp_log$value, c(0.025, 0.975))), lwd = 0.5, col = c('black', 'red', 'red')) +
+      theme_classic() + ylab('Frequency') + xlab('Estimate Value')
+      
+    plot_exp <- ggplot(data = temp_exp, aes(x = value)) +
+      geom_histogram(fill = COLOR, color = COLOR2, bins = 20) + 
+      theme_classic() + xlab('Estimate Value') + ylab('Frequency') +
+      geom_vline(xintercept = c(1, quantile(temp_exp$value, c(0.025, 0.975))), lwd = 0.5, col = c('black', 'red', 'red'))
+    
+    plt <- subplot(
+      list(
+        ggplotly(plot_log, height = 300, width = 800), 
+        ggplotly(plot_exp, height = 300, width = 800)
+      ),
+      shareX = FALSE, shareY = FALSE,
+      titleX = TRUE, titleY = TRUE, margin = c(0.05, 0.05, 0, 0) # Adjust margin to make plots closer
+    )
+    
+    plt %>% layout(
+      annotations = list(
+        list(x = 0.155, y = 1.15, text = "Log Scale", showarrow = FALSE, xref = 'paper', yref = 'paper'), 
+        list(x = 0.855, y = 1.15, text = "Exponential Scale", showarrow = FALSE, xref = 'paper', yref = 'paper')
+      ),
+      margin = list(b = 0, l = 0) # to fully display the x and y axis labels
+    )
+  })
+}
+
+# Run the application 
+shinyApp(ui = ui, server = server)
+
+```
+
+
+|       A detectable quadratic effect of time on accident odds implies an initial increase and eventual decrease in accident odds after a certain number of hours after opening. The mean estimated curve of the change in accident log odds given time $\hat{\gamma}(t)$ is given by the equation
+
+$$
+\hat{\gamma}(t)=0.6519t-0.0274t^2
+$$
+
+which is a negative parabolic curve with its maximum at $t=11.90$. This result suggests that about 12 hours after opening (6 PM) the odds of an accident is highest. This makes sense considering that this time typically has high traffic in the facility and throughout Campus Recreation. Note that this curve, due to the lack of interpretation in the intercept, represents a multiplicative change in accident odds with reference to $t=0$. For instance, at peak risk, accident odds are estimated to increase by 48.3 times compared to that of opening time, and decrease to 30.14 times by closing time. Both the curves of the log odds and odds are shown in Figure 4. 
+
+```{r timecurve,echo=FALSE,fig.dim=c(8,3),fig.cap='Figure 4: Trend Curves for Odds and Log Odds Over Time',fig.align='center'}
+log_curve <- function(x) ( tab3[1,1]*x + tab3[2,1]*x^2)
+exp_curve <- function(x) exp(log_curve(x))
+
+q1 <- ggplot() + xlim(0,16) + geom_function(fun = log_curve,lwd=1,color=COLOR2) + theme_classic() + 
+    ylab('Change in Accident Log Odds')
+q2 <- ggplot() + xlim(0,16) + geom_function(fun = exp_curve,lwd=1,color=COLOR2) + theme_classic() + 
+    ylab('Change in Accident Odds')
+grid.arrange(q1,q2,ncol=2,bottom = 'Hours from 6 AM')
+```
+
+|       The results of this analysis suggest that basketball in MAC Gym, facility open recreation and climbing, field sports, rugby and soccer in the fields, and volleyball in Historic Gym are the locations and activities with the greatest accident risk. Pairwise comparisons also find that none of these seven combinations are different from the other in the population. Considering the anaerobic demands and high-risk play of the listed field sports, MAC basketball, and Historic volleyball, it makes sense for those combinations to match accident risk. Open recreation in the facility having the same accident risk as MAC basketball implies that most facility activities *combined* have about the same risk as MAC basketball, which seems reasonable. However, climbing activities being in this high-risk category was not expected. The more casual nature of climbing activities in the facility is a sharp contrast to the other high-risk location/activity combinations. 
+
+|       To illustrate the difference in accident risk between the high-risk and low-risk locations and activities, interpretations can be applied with respect to odds ratios. The location/activity with the smallest relative accident odds is soccer outside the known locations (other) with a mean coefficient estimate of -3.431. Therefore, its estimated odds ratio between itself and MAC basketball is $e^{-3.431}=0.0323$ which means MAC basketball has a $\frac{1}{0.0323}=30.96$ times higher accident odds than other/soccer. This implies that the areas that require more attention need much more attention than the low-risk areas.   
+
+$\\$
+
+## Discussion
+
+|       Quantifying accident risks for Campus Recreation given an interesting perspective on different locations and activities. The magnitude of difference in accident risk between high-and-low-risk locations/activities suggests comparing low-risk activities to each other gives little actionable information. Using MAC basketball as the reference category makes the interpretations quite intuitive because administrators are most familiar with the accident risk for MAC basketball, which is a strength of this analysis. Using a different baseline with the same relationships may lead to different connotations for the administrators.
+
+|       Simulation studies are one of the few ways to assess risk, particularly using existing data. Assuming the proportion of recorded accidents are representative of all possible accident occurences in the past and future for UW Campus Recreation, the simulated results give a robust estimate of accident odds. However, a limitation of the analysis is the many location/activity combinations that were not recorded. It does not seem reasonable that these combinations carry no accident risk, but a lack of measurement means these risks are ultimately unknown but unto intuition.
+
+|       Another limitation is that no kind of prediction is possible with this model. Because the estimated probabilities of an accident were fixed at 0.5, any prediction equations for probabilities/odds would provide meaningless results. That said, prediction may not be a useful tool for administrators in this case. Using probabilities would only work by providing relative risk as actionable information, which was done with odds ratios in this analysis. Taking measures against accidents requires a degree of patron restriction, which would detriment the recreational environment if too much preventative action is taken. Therefore, accident risk is a necessary element for running a proper facility. Regardless of accident chance, policies are structured for accident readiness rather that complete risk reduction, though some risk reduction is built into policies. Administrators are more interested in knowing where to be proactive with accident preparation than lowering accident chance.
+
+|       A great deal of assumptions are made in this model, owing to its simplicity. Thus, a large amount of unexplained variables may confound the results: sub populations that carry higher risk, the time of year, sports seasons, semester status, breaks, patron counts, pandemics, among others may lead to a systematic change in accident risk. If administrators are interested in a more comprehensive risk assessment, then these are likely some variables that could be accounted for. Because experimentation on accident risk is not possible, recording data such as patron counts, groups, or even other universities' campus recreation statistics may add more information about accident risk. 
+
+|       The results of this study suggest that risk management procedures should target the highest risks appropriately. Fortunately, most of the greatest risks are the most thoroughly staffed. All Campus Recreation field activities are exclusively intramural and club sports games. In these games, supervisors, referees, and other officials are always present. If an accident occurs, little can be done to speed up response time; however, MAC basketball and Historic volleyball have inconsistent supervision. For intramural and club games, staffing is the same in the gyms as in the fields. Otherwise, patrons are free to play relatively unsupervised. When unsupervised, the Open Recreation department is responsible for preventing and responding to accidents. The results of the analysis should be used to inform staff about the most accident-prone facility conditions. With that information, staff are better equipped to catch risky behavior or accident events. Most of these recommendations are already implemented; however, adjustments should be made with policies related to the climbing wall. Generally, the climbing wall is not supervised directly except during events and peak hours while I was employed there. Since the wall is always open while the facility is open, staff should ensure the wall is being thoroughly checked and policies are being followed appropriately, provided staff do not already do so.  
+
+|       Given the implementation of these recommendations, the day-to-day operations of the Campus Recreation department would change little. Accidents rarely happen under the department's responsibility relative to the traffic experienced on a daily basis. However, accidents should be treated as random events with patterns of risk. Because of that randomness, having a safety net prepared is important for the inevitable accident event. Understanding risk patterns through this analysis bolsters staff's accident preparation. Continuing to research accident risk can further optimize risk management procedures. With a more efficient risk management procedure, attention is allocated appropriately and a safe recreational environment is continually cultivated.
